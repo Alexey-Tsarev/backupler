@@ -12,6 +12,7 @@ else
     LOG_ECHO=false
 fi
 
+# Cfg
 CFG_DIR=cfg
 BACKUP_DIR=/backup_storage # on a remote system
 ARCHIVE_DATE_MASK=+%Y-%m-%d_%H-%M-%S
@@ -19,14 +20,13 @@ LOG_MSG_DATE_MASK="+%Y-%m-%d %H:%M:%S %Z"
 UMASK=0007
 MYSQLDUMP_TMP_DIR=/tmp
 DB_ARCH_NAME_EXT=.gz
-RSYNC_OPT="--verbose --progress"
-
 SSH_TPL="ssh -q DST_USER@DST_HOST"
+RSYNC_OPT="--verbose --progress"
 RSYNC_TPL="rsync RSYNC_OPT -aR --compress --delete --perms --chmod=o-rwx,g+rw,Dg+rwx -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
 MYSQL_GET_ALL_DB_NAMES_TPL="mysql --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\" | sort"
 MYSQLDUMP_TPL="mysqldump --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys DB_NAME | gzip -c --best > DB_ARCH_NAME"
-
 POST_CMD_TPL='eval grep --color=never "Start\|Use the config\|Work with the dir\|Dump the DB\|Finish\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
+# End Cfg
 
 
 # $1 - (string) message
