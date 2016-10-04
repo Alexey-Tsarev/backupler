@@ -2,7 +2,7 @@
 
 # set -x
 
-DST_HOST=example.host
+DST_HOST=some.host
 LOG_DIR=log
 LOG_EXT=.log
 
@@ -63,10 +63,14 @@ else
 fi
 
 SOURCE_FILE="$CFG_DIR/$CFG"
+
+if [ ! -f "$SOURCE_FILE" ]; then
+    echo "Can't read the file: $SOURCE_FILE"
+    exit 2
+fi
+
 . "$SOURCE_FILE"
-
 umask "$UMASK"
-
 DT=`date "$ARCHIVE_DATE_MASK"`
 LOG_DIR="$LOG_DIR/$CFG"
 LOG_FILE=${LOG_DIR}/${DT}${LOG_EXT}
@@ -84,7 +88,7 @@ log "Use the config: $SOURCE_FILE"
 
 if [ ! -f "$SOURCE_FILE" ]; then
     log "This configuration doesn't exist. Exit"
-    exit 2
+    exit 3
 fi
 
 BACKUP_ROOT_DIR="$BACKUP_DIR/$CFG"
@@ -206,7 +210,7 @@ $OUT"
         else
             log "Failed. Dump wasn't created, output:
 $OUT"
-            exit 3
+            exit 4
         fi
     done
 
