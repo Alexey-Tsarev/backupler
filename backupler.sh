@@ -70,6 +70,12 @@ if [ ! -f "$SOURCE_FILE" ]; then
 fi
 
 . "$SOURCE_FILE"
+
+if [ $? -ne 0 ]; then
+    echo "Failed to source the file: $SOURCE_FILE. Exit 1"
+    exit 1
+fi
+
 umask "$UMASK"
 DT=`date "$ARCHIVE_DATE_MASK"`
 LOG_DIR="$LOG_DIR/$CFG"
