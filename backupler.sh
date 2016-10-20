@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # set -x
+set -o pipefail
 
 DST_HOST=some.host
 LOG_DIR=log
@@ -23,9 +24,11 @@ DB_ARCH_NAME_EXT=.gz
 SSH_TPL="ssh -q DST_USER@DST_HOST"
 RSYNC_OPT="--verbose --progress"
 RSYNC_TPL="rsync RSYNC_OPT -aR --compress --delete --perms --chmod=o-rwx,g+rw,Dg+rwx -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
-MYSQL_GET_ALL_DB_NAMES_TPL="mysql --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\" | sort"
-MYSQLDUMP_TPL="mysqldump --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
-POST_CMD_TPL='eval grep --color=never "Start\|Use the config\|Work with the dir\|Dump the DB\|Finish\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
+MYSQL_CMD=mysql
+MYSQL_GET_ALL_DB_NAMES_TPL="MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
+MYSQLDUMP_CMD=mysqldump
+MYSQLDUMP_TPL="MYSQLDUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
+POST_CMD_TPL='eval grep --color=never "Error: \|Start\|Use the config\|Work with the dir\|Dump the DB\|Finish\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
 # End Cfg
 
 
@@ -33,10 +36,9 @@ POST_CMD_TPL='eval grep --color=never "Start\|Use the config\|Work with the dir\
 # $2 - (boolean, default true) print date/time
 # $3 - (boolean, default true) print end of line
 log() {
-    local MSG=
-    local ECHO_OPT=
-
-    if [ "$2" != false ]; then
+    if [ "$2" == false ]; then
+        MSG=
+    else
         MSG="`date '+%Y-%m-%d %H:%M:%S,%3N %Z'` - "
     fi
 
@@ -44,6 +46,8 @@ log() {
 
     if [ "$3" == false ]; then
         ECHO_OPT=-n
+    else
+        ECHO_OPT=
     fi
 
     if [ ${LOG_ECHO} == true ]; then
@@ -159,66 +163,74 @@ for DIRS_ITERATOR in "${!DIRS[@]}"; do
     # End
 
     log "Run rsync: $RSYNC_CMD"
-    OUT=`eval "${RSYNC_CMD}" 2>&1`
+    OUT=`eval "${RSYNC_CMD} 2>&1"`
     log "Output:
 $OUT"
-    log "Completed dir: $DIR"
+    log "Completed the dir: $DIR"
 done
 
 
 if [ -n "$MYSQL_HOST" ]; then
     log "DB backup start"
 
-    MYSQL_CMD="$MYSQL_GET_ALL_DB_NAMES_TPL"
-    MYSQL_CMD=${MYSQL_CMD//MYSQL_HOST/${MYSQL_HOST}}
-    MYSQL_CMD=${MYSQL_CMD//MYSQL_USER/${MYSQL_USER}}
-    MYSQL_CMD=${MYSQL_CMD//MYSQL_PASS/${MYSQL_PASS}}
+    MYSQL_EXEC="$MYSQL_GET_ALL_DB_NAMES_TPL"
+    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_CMD/${MYSQL_CMD}}
+    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_HOST/${MYSQL_HOST}}
+    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_USER/${MYSQL_USER}}
+    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_PASS/${MYSQL_PASS}}
 
     log "Get all databases name"
-    DBS=`eval "${MYSQL_CMD}" 2>&1`
-    log "Output:
+    DBS=`eval "${MYSQL_EXEC} 2>&1"`
+
+    if [ $? -ne 0 ]; then
+        log "Error: 'Get all databases name' failed. Output: $DBS"
+    else
+        log "Output:
 $DBS"
 
-    echo "$DBS" | while read -r DB; do
-        log "Dump the DB: $DB"
+        DBS=(${DBS})
 
-        DB_ARCH_NAME=${MYSQLDUMP_TMP_DIR}/${DB}${DB_ARCH_NAME_EXT}
+        for DB in "${DBS[@]}"; do
+            log "Dump the DB: $DB"
 
-        if [ -f "$DB_ARCH_NAME" ]; then
-            log "Remove the file: $DB_ARCH_NAME"
-            rm -f "$DB_ARCH_NAME"
-        fi
+            DB_ARCH_NAME=${MYSQLDUMP_TMP_DIR}/${DB}${DB_ARCH_NAME_EXT}
 
-        MYSQLDUMP_CMD="$MYSQLDUMP_TPL"
-        MYSQLDUMP_CMD=${MYSQLDUMP_CMD//MYSQL_HOST/${MYSQL_HOST}}
-        MYSQLDUMP_CMD=${MYSQLDUMP_CMD//MYSQL_USER/${MYSQL_USER}}
-        MYSQLDUMP_CMD=${MYSQLDUMP_CMD//MYSQL_PASS/${MYSQL_PASS}}
-        MYSQLDUMP_CMD=${MYSQLDUMP_CMD//DB_NAME/${DB}}
-        MYSQLDUMP_CMD=${MYSQLDUMP_CMD//DB_ARCH_NAME/${DB_ARCH_NAME}}
+            if [ -f "$DB_ARCH_NAME" ]; then
+                log "Remove the file: $DB_ARCH_NAME"
+                rm -f "$DB_ARCH_NAME"
+            fi
 
-        OUT=`eval "${MYSQLDUMP_CMD}" 2>&1`
+            MYSQLDUMP_EXEC="$MYSQLDUMP_TPL"
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQLDUMP_CMD/${MYSQLDUMP_CMD}}
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_HOST/${MYSQL_HOST}}
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_USER/${MYSQL_USER}}
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_PASS/${MYSQL_PASS}}
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//DB_NAME/${DB}}
+            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//DB_ARCH_NAME/${DB_ARCH_NAME}}
 
-        if [ $? -eq 0 ] && [ -f "$DB_ARCH_NAME" ]; then
-            RSYNC_CMD="$RSYNC_TPL"
-            RSYNC_CMD=${RSYNC_CMD//RSYNC_OPT/${RSYNC_OPT}}
-            RSYNC_CMD=${RSYNC_CMD//SRC/$DB_ARCH_NAME}
-            RSYNC_CMD=${RSYNC_CMD//DST_USER/$DST_USER}
-            RSYNC_CMD=${RSYNC_CMD//DST_HOST/$DST_HOST}
-            RSYNC_CMD=${RSYNC_CMD//DST_DIR/$BACKUP_DIR}
-            RSYNC_CMD=${RSYNC_CMD//EXCLUDE /}
+            OUT=`eval "${MYSQLDUMP_EXEC} 2>&1"`
 
-            log "Run rsync: $RSYNC_CMD"
-            OUT=`eval "${RSYNC_CMD}" 2>&1`
-            log "Output:
+            if [ $? -eq 0 ] && [ -f "$DB_ARCH_NAME" ]; then
+                RSYNC_CMD="$RSYNC_TPL"
+                RSYNC_CMD=${RSYNC_CMD//RSYNC_OPT/${RSYNC_OPT}}
+                RSYNC_CMD=${RSYNC_CMD//SRC/$DB_ARCH_NAME}
+                RSYNC_CMD=${RSYNC_CMD//DST_USER/$DST_USER}
+                RSYNC_CMD=${RSYNC_CMD//DST_HOST/$DST_HOST}
+                RSYNC_CMD=${RSYNC_CMD//DST_DIR/$BACKUP_DIR}
+                RSYNC_CMD=${RSYNC_CMD//EXCLUDE /}
+
+                log "Run rsync: $RSYNC_CMD"
+                OUT=`eval "${RSYNC_CMD} 2>&1"`
+                log "Output:
 $OUT"
+                rm -f "$DB_ARCH_NAME"
+            else
+                log "Error: Backup failed for the DB: '$DB'. Output: $OUT"
+            fi
 
-            rm -f "$DB_ARCH_NAME"
-        else
-            log "Failed. Dump wasn't created, output:
-$OUT"
-            exit 4
-        fi
-    done
+            log "Completed the DB dump: $DB"
+        done
+    fi
 
     log "DB backup finish"
 fi
