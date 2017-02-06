@@ -23,7 +23,6 @@ EXCLUDE=(
 DST_USER=backup1
 DST_HOST=192.168.22.11
 BACKUP_DIR=/mnt/zfs/compr_dedup/backup_storage
-LOG_ECHO=false
 RSYNC_OPT="--verbose --progress --bwlimit=200K"
 
 MYSQL_HOST=127.0.0.1

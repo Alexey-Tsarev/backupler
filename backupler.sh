@@ -21,7 +21,7 @@ LOG_MSG_DATE_MASK="+%Y-%m-%d %H:%M:%S %Z"
 UMASK=0007
 MYSQLDUMP_TMP_DIR=/tmp
 DB_ARCH_NAME_EXT=.gz
-SSH_TPL="ssh -q DST_USER@DST_HOST"
+SSH_TPL="ssh -q DST_USER@DST_HOST "
 RSYNC_OPT="--verbose --progress"
 RSYNC_TPL="rsync RSYNC_OPT -aR --compress --delete --perms --chmod=o-rwx,g+rw,Dg+rwx -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
 MYSQL_CMD=mysql
@@ -59,7 +59,8 @@ log() {
 
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 config_file. Config directory: $CFG_DIR"
+    echo "Usage: $0 config_file"
+    echo "Config directory: $CFG_DIR"
     echo "Exit"
     exit 1
 else
@@ -109,20 +110,20 @@ SSH_CMD="$SSH_TPL"
 SSH_CMD=${SSH_CMD//DST_USER/${DST_USER}}
 SSH_CMD=${SSH_CMD//DST_HOST/${DST_HOST}}
 
-CMD="$SSH_CMD ls $BACKUP_ROOT_DIR 2> /dev/null | sort | tail -n 1"
+CMD="${SSH_CMD}ls $BACKUP_ROOT_DIR 2> /dev/null | sort | tail -n 1"
 log "Find latest backup, run: $CMD"
-LAST_BACKUP_DIR=`${CMD}`
+LAST_BACKUP_DIR=`eval ${CMD}`
 
 if [ -z "$LAST_BACKUP_DIR" ]; then
     log "Latest backup not found"
-    CMD="$SSH_CMD umask $UMASK; mkdir -p $BACKUP_DIR"
+    CMD="${SSH_CMD}umask $UMASK; mkdir -p $BACKUP_DIR"
     log "Create destination directory, run: $CMD"
-    ${CMD}
+    eval ${CMD}
 else
     LAST_BACKUP_DIR="$BACKUP_ROOT_DIR/$LAST_BACKUP_DIR"
     log "Found latest backup: $LAST_BACKUP_DIR"
 
-    CMD="$SSH_CMD cp -al $LAST_BACKUP_DIR $BACKUP_DIR"
+    CMD="${SSH_CMD}cp -al $LAST_BACKUP_DIR $BACKUP_DIR"
     log "Copying data from latest to new backup, run: $CMD"
     ${CMD}
     log "Copy finished"

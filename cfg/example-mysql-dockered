@@ -1,0 +1,33 @@
+DIRS=(
+/boot
+/etc
+/home
+/opt
+/root
+/srv
+/usr/local
+/var/log
+/var/lib
+/var/spool/mail
+/var/www
+/mnt/raid/storage
+)
+
+EXCLUDE=(
+/srv/VirtualBox
+/var/lib/mysql
+/var/lib/rpm
+/var/lib/yum
+)
+
+DST_USER=backup7
+DST_HOST=backup-host
+BACKUP_DIR=/mnt/zfs/compr_dedup/backup_storage
+RSYNC_OPT="--verbose --progress --bwlimit=200K"
+
+MYSQL_HOST=127.0.0.1
+MYSQL_USER=root
+MYSQL_PASS=mysql-password
+
+MYSQL_CMD="docker exec -i mysql mysql"
+MYSQLDUMP_CMD="docker exec -i mysql mysqldump"
