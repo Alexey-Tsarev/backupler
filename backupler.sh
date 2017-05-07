@@ -3,7 +3,7 @@
 # set -x
 set -o pipefail
 
-DST_HOST=some.host
+DST_HOST=sofree.no-ip.org
 LOG_DIR=log
 LOG_EXT=.log
 
@@ -116,9 +116,14 @@ LAST_BACKUP_DIR=`eval ${CMD}`
 
 if [ -z "$LAST_BACKUP_DIR" ]; then
     log "Latest backup not found"
-    CMD="${SSH_CMD}umask $UMASK; mkdir -p $BACKUP_DIR"
+    CMD="${SSH_CMD}'umask $UMASK; mkdir -p $BACKUP_DIR'"
     log "Create destination directory, run: $CMD"
     eval ${CMD}
+
+    if [ $? -ne "0" ]; then
+        log "Failed to create the directory. Exit"
+        exit 1
+    fi
 else
     LAST_BACKUP_DIR="$BACKUP_ROOT_DIR/$LAST_BACKUP_DIR"
     log "Found latest backup: $LAST_BACKUP_DIR"
