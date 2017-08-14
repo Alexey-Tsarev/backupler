@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # set -x
 set -o pipefail
 
-DST_HOST=sofree.no-ip.org
+DST_HOST=some.host
 LOG_DIR=log
 LOG_EXT=.log
 
@@ -13,6 +13,7 @@ else
     LOG_ECHO=false
 fi
 
+
 # Cfg
 CFG_DIR=cfg
 BACKUP_DIR=/backup_storage # on a remote system
@@ -21,14 +22,16 @@ LOG_MSG_DATE_MASK="+%Y-%m-%d %H:%M:%S %Z"
 UMASK=0007
 MYSQLDUMP_TMP_DIR=/tmp
 DB_ARCH_NAME_EXT=.gz
-SSH_TPL="ssh -q DST_USER@DST_HOST "
+SSH_TPL="ssh -q DST_USER@DST_HOST"
 RSYNC_OPT="--verbose --progress"
-RSYNC_TPL="rsync RSYNC_OPT -aR --compress --delete --perms --chmod=o-rwx,g+rw,Dg+rwx -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
+RSYNC_TPL="nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR --compress --delete --perms --chmod=g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
 MYSQL_CMD=mysql
 MYSQL_GET_ALL_DB_NAMES_TPL="MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
 MYSQLDUMP_CMD=mysqldump
 MYSQLDUMP_TPL="MYSQLDUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
-POST_CMD_TPL='eval grep --color=never "Error: \|Start\|Use the config\|Work with the dir\|Dump the DB\|Finish\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
+POST_CMD_TPL='eval grep --color=never "Error: \| - Start$\| - Use the config\| - Work with the dir\| - Dump the DB\| - Finish$\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
+KEEP_LAST_BACKUPS=5
+KEEP_FIRST_BY_UNIQ_STR_PART=8 # Backups look 2017-01-01_15-02-02, 2017-02-01_15-02-03. First 8 symbols are markers to keep backup (For example "2017-01-" and "2017-02-")
 # End Cfg
 
 
@@ -106,17 +109,26 @@ BACKUP_ROOT_DIR="$BACKUP_DIR/$CFG"
 BACKUP_DIR="$BACKUP_ROOT_DIR/$DT"
 log "New backup dir is: $BACKUP_DIR"
 
-SSH_CMD="$SSH_TPL"
-SSH_CMD=${SSH_CMD//DST_USER/${DST_USER}}
-SSH_CMD=${SSH_CMD//DST_HOST/${DST_HOST}}
+if [ -n "$SSH_TPL" ]; then
+    SSH_CMD="$SSH_TPL"
+    SSH_CMD=${SSH_CMD//DST_USER/${DST_USER}}
+    SSH_CMD=${SSH_CMD//DST_HOST/${DST_HOST}}
+    SSH_PRE_CMD="$SSH_CMD '"
+    SSH_POST_CMD="'"
+else
+    SSH_CMD=
+    SSH_PRE_CMD=
+    SSH_POST_CMD=
+fi
 
-CMD="${SSH_CMD}ls $BACKUP_ROOT_DIR 2> /dev/null | sort | tail -n 1"
+CMD="${SSH_PRE_CMD}ls $BACKUP_ROOT_DIR 2> /dev/null${SSH_POST_CMD} | sort"
 log "Find latest backup, run: $CMD"
-LAST_BACKUP_DIR=`eval ${CMD}`
+BACKUPS_LIST=`eval ${CMD}`
+LAST_BACKUP_DIR=`echo "$BACKUPS_LIST" | tail -n 1`
 
 if [ -z "$LAST_BACKUP_DIR" ]; then
     log "Latest backup not found"
-    CMD="${SSH_CMD}'umask $UMASK; mkdir -p $BACKUP_DIR'"
+    CMD="${SSH_PRE_CMD}umask $UMASK; mkdir -p $BACKUP_DIR${SSH_POST_CMD}"
     log "Create destination directory, run: $CMD"
     eval ${CMD}
 
@@ -128,9 +140,9 @@ else
     LAST_BACKUP_DIR="$BACKUP_ROOT_DIR/$LAST_BACKUP_DIR"
     log "Found latest backup: $LAST_BACKUP_DIR"
 
-    CMD="${SSH_CMD}cp -al $LAST_BACKUP_DIR $BACKUP_DIR"
+    CMD="${SSH_PRE_CMD}nice -n 19 ionice -c 3 cp -al $LAST_BACKUP_DIR $BACKUP_DIR${SSH_POST_CMD}"
     log "Copying data from latest to new backup, run: $CMD"
-    ${CMD}
+    eval ${CMD}
     log "Copy finished"
 fi
 
@@ -175,7 +187,7 @@ $OUT"
     log "Completed the dir: $DIR"
 done
 
-
+# MySQL DBs dump
 if [ -n "$MYSQL_HOST" ]; then
     log "DB backup start"
 
@@ -240,6 +252,7 @@ $OUT"
 
     log "DB backup finish"
 fi
+# End MySQL DBs dump
 
 log "Finish"
 
@@ -250,3 +263,54 @@ if [ -n "$POST_CMD_TPL" ]; then
     log "Run POST_CMD"
     ${POST_CMD}
 fi
+
+# Remove old backups
+if [ -n "$KEEP_LAST_BACKUPS" ]; then
+    log "All backups list:"
+    if [ -n "$BACKUPS_LIST" ]; then
+        log "$BACKUPS_LIST" false
+    else
+        log "<empty>" false
+    fi
+
+    CANDIDATES_TO_REMOVE=`echo "$BACKUPS_LIST" | head -n -${KEEP_LAST_BACKUPS}`
+    log "List without last $KEEP_LAST_BACKUPS backups"
+    if [ -n "$CANDIDATES_TO_REMOVE" ]; then
+        log "$CANDIDATES_TO_REMOVE" false
+    else
+        log "<empty>" false
+    fi
+
+    KEEP=()
+    DELETE=()
+    FIRST_BY_UNIQ_STR_PART=
+
+    while read -r CANDIDATE; do
+        CANDIDATE_UNIQ_STR_PART="${CANDIDATE:0:$KEEP_FIRST_BY_UNIQ_STR_PART}"
+
+        if [ -z "$FIRST_BY_UNIQ_STR_PART" ] || [ "$FIRST_BY_UNIQ_STR_PART" != "$CANDIDATE_UNIQ_STR_PART" ] ; then
+            KEEP+=("$CANDIDATE")
+            FIRST_BY_UNIQ_STR_PART="$CANDIDATE_UNIQ_STR_PART"
+        else
+            DELETE+=("$CANDIDATE")
+        fi
+    done <<< "$CANDIDATES_TO_REMOVE"
+
+    log "Keep backups list:"
+    if [ -n "$KEEP" ]; then
+        (IFS=$'\n'; log "${KEEP[*]}" false)
+    else
+        log "<empty>" false
+    fi
+
+    log "Delete backups list:"
+    if [ -n "$DELETE" ]; then
+        (IFS=$'\n'; log "${DELETE[*]}" false)
+        CMD="${SSH_PRE_CMD}cd $BACKUP_ROOT_DIR && rm -rf ${DELETE[*]}${SSH_POST_CMD}"
+        log "Delete backups, run: $CMD"
+        eval ${CMD}
+    else
+        log "<empty>" false
+    fi
+fi
+# End Remove old backups
