@@ -9,6 +9,7 @@ This is a simple shell script which makes backup via rsync / ssh.
  - Backup all MySQL tables
  - Logging
  - Post process run, e.g. send a message via Jabber
+ - Archive rotation
  - You receive your backuped data as regular files / directories. No zip / tar.gz
  ~~~
 .
@@ -43,5 +44,5 @@ and backup home server to remote Raspberry Pi 3 host with 4G USB stick and USB H
 ---
 
 
-Good Luck and Best Regards,
+Good Luck and Best Regards,  
 Alexey Tsarev, Tsarev.Alexey at gmail.com
