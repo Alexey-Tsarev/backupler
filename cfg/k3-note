@@ -1,8 +1,0 @@
-SSH_TPL=
-RSYNC_TPL="rsync RSYNC_OPT -a --compress --delete --perms --chmod=o-rwx,g+rw,Dg+rwx EXCLUDE SRC DST_DIR"
-BACKUP_DIR=storage
-
-DIRS=(
-$MPOINT/data/data
-$MPOINT/storage/emulated/0
-)

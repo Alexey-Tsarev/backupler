@@ -1,53 +1,53 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-# set -x
+#set -x
 
 SSH_USER_HOST=backupX@some.host
+SSH_PORT=2222
 MNT_POINT=/mnt/sshfs_backupler
 REMOTE_CMD=/backup/backupler.sh
-CFG=`hostname -s`
+CFG="$(hostname -s)"
 
-if [ -n "`env | grep TERM=`" ]; then
-    LOG_ECHO=true
+if [ -n "${TERM}" ] && [ "${TERM}" != "dumb" ]; then
+    LOG_ECHO=1
 else
-    LOG_ECHO=false
+    LOG_ECHO=0
 fi
 
-
 log() {
-    if [ "$LOG_ECHO" == true ]; then
+    if [ "${LOG_ECHO}" == "1" ]; then
         echo "$1"
     fi
 }
 
 sshfs_umount() {
-    fusermount -u "$MNT_POINT" > /dev/null 2>&1
+    fusermount -u "${MNT_POINT}" > /dev/null 2>&1
 }
 
+REMOTE_CMD_LOCALLY="${MNT_POINT}${REMOTE_CMD}"
+REMOTE_CMD_LOCAL_DIR="$(dirname ${REMOTE_CMD_LOCALLY})"
+export REMOTE_CMD_LOCAL_DIR
 
-REMOTE_CMD_LOCALLY=${MNT_POINT}${REMOTE_CMD}
-REMOTE_CMD_LOCAL_DIR=`dirname ${REMOTE_CMD_LOCALLY}`
-
-if [ ! -d "$MNT_POINT" ]; then
-    mkdir -p "$MNT_POINT"
+if [ ! -d "${MNT_POINT}" ]; then
+    mkdir -p "${MNT_POINT}"
 fi
 
 sshfs_umount
 
-CMD="sshfs $SSH_USER_HOST:/ $MNT_POINT"
-log "Trying to mount remote fs, run: $CMD"
+CMD="sshfs -p ${SSH_PORT} -o StrictHostKeyChecking=no ${SSH_USER_HOST}:/ ${MNT_POINT}"
+log "Trying to mount remote fs, run: ${CMD}"
 ${CMD}
+CMD_ec="$?"
 
-if [ $? -eq 0 ]; then
+if [ "${CMD_ec}" -eq 0 ]; then
     log "Success"
 else
-    log "Mount failed. Exit"
-    exit 1
+    log "Mount failed. Exit ${CMD_ec}"
+    exit "${CMD_ec}"
 fi
 
-OLD_PWD=`pwd`
-cd "$REMOTE_CMD_LOCAL_DIR"
-${REMOTE_CMD_LOCALLY} "$CFG"
+cd "${REMOTE_CMD_LOCAL_DIR}" || exit 1
+"${REMOTE_CMD_LOCALLY}" "${CFG}"
 
-cd "$OLD_PWD"
+cd "${OLDPWD}" || exit 2
 sshfs_umount

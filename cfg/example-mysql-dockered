@@ -8,6 +8,7 @@ DIRS=(
 /usr/local
 /var/log
 /var/lib
+/var/spool/cron
 /var/spool/mail
 /var/www
 /mnt/raid/storage

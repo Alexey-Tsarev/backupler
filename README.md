@@ -1,14 +1,14 @@
 # Backupler
-This is a simple shell script which makes backup via rsync / ssh.
+This is a shell script which makes backup via rsync / ssh.
 
 # Features
  - Use ssh keys for authorization
  - Use Rsync for quick sync data
- - Rsync options per host (for example max network speed)
- - "Current" backup created based on previous backup by running cp -l (hardlink)
+ - Rsync options per a host (for example max network speed)
+ - A current backup is created based on the previous backup by running "cp -al" (hardlinking)
  - Backup all MySQL tables
  - Logging
- - Post process run, e.g. send a message via Jabber
+ - Post process run, e.g. send a message via Email
  - Archive rotation
  - You receive your backuped data as regular files / directories. No zip / tar.gz
  ~~~
@@ -39,8 +39,9 @@ This is a simple shell script which makes backup via rsync / ssh.
     └── var
 ~~~
 
-I use this script to backup 2 VDS hosts
-and backup home server to remote Raspberry Pi 3 host with 4G USB stick and USB HDD with ZFS.
+I use this script to back up VDS hosts
+and backup home server to a remote Raspberry Pi 4 host.
+
 ---
 
 

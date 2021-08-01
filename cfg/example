@@ -8,6 +8,7 @@ DIRS=(
 /usr/local
 /var/log
 /var/lib
+/var/spool/cron
 /var/spool/mail
 /var/www
 /mnt/raid/storage
@@ -21,7 +22,7 @@ EXCLUDE=(
 )
 
 DST_USER=backup1
-DST_HOST=192.168.22.11
+DST_HOST=192.168.1.1
 BACKUP_DIR=/mnt/zfs/compr_dedup/backup_storage
 RSYNC_OPT="--verbose --progress --bwlimit=200K"
 

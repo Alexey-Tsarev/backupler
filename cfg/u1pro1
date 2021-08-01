@@ -1,0 +1,15 @@
+SSH_TPL=
+RSYNC_TPL="nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --compress --perms --chmod=o-rwx,g+rw,Du+rwx,Dg+rwx,Do-rwx,D-t EXCLUDE SRC DST_DIR"
+BACKUP_DIR=storage
+
+DIRS=(
+${MPOINT}/data/data
+${MPOINT}/storage/emulated
+)
+
+EXCLUDE=(
+${MPOINT}/storage/emulated/0/_MM
+${MPOINT}/storage/emulated/0/Download
+)
+
+POST_CMD_TPL="eval export PACKAGES_LIST_FLAG=0 DOCKER_FLAG=0; ${POST_CMD_TPL}"

@@ -1,316 +1,367 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # set -x
 set -o pipefail
 
-DST_HOST=some.host
-LOG_DIR=log
-LOG_EXT=.log
-
-if [ -n "`env | grep TERM=`" ]; then
-    LOG_ECHO=true
-else
-    LOG_ECHO=false
+if [ -f ".env" ]; then
+    . ".env"
 fi
 
-
-# Cfg
-CFG_DIR=cfg
-BACKUP_DIR=/backup_storage # on a remote system
-ARCHIVE_DATE_MASK=+%Y-%m-%d_%H-%M-%S
-LOG_MSG_DATE_MASK="+%Y-%m-%d %H:%M:%S %Z"
-UMASK=0007
-MYSQLDUMP_TMP_DIR=/tmp
-DB_ARCH_NAME_EXT=.gz
-SSH_TPL="ssh -q DST_USER@DST_HOST"
-RSYNC_OPT="--verbose --progress"
-RSYNC_TPL="nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR --compress --delete --perms --chmod=g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
-MYSQL_CMD=mysql
-MYSQL_GET_ALL_DB_NAMES_TPL="MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
-MYSQLDUMP_CMD=mysqldump
-MYSQLDUMP_TPL="MYSQLDUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
-POST_CMD_TPL='eval grep --color=never "Error: \| - Start$\| - Use the config\| - Work with the dir\| - Dump the DB\| - Finish$\|rsync error" LOG_FILE | ./send_xmpp.sh > /dev/null 2>&1'
-KEEP_LAST_BACKUPS=5
-KEEP_FIRST_BY_UNIQ_STR_PART=8 # Backups look 2017-01-01_15-02-02, 2017-02-01_15-02-03. First 8 symbols are markers to keep backup (For example "2017-01-" and "2017-02-")
-# End Cfg
-
-
-# $1 - (string) message
-# $2 - (boolean, default true) print date/time
-# $3 - (boolean, default true) print end of line
-log() {
-    if [ "$2" == false ]; then
-        MSG=
-    else
-        MSG="`date '+%Y-%m-%d %H:%M:%S,%3N %Z'` - "
+# $1 - variable name
+# $2 - variable default value
+set_var() {
+    if [ -z "${!1}" ]; then
+        eval "$1"='$2'
     fi
-
-    MSG=${MSG}${1}
-
-    if [ "$3" == false ]; then
-        ECHO_OPT=-n
-    else
-        ECHO_OPT=
-    fi
-
-    if [ ${LOG_ECHO} == true ]; then
-        echo ${ECHO_OPT} "$MSG"
-    fi
-
-    echo ${ECHO_OPT} "$MSG" >> "$LOG_FILE"
 }
 
+# Cfg
+set_var "DST_HOST" "some.host"
+set_var "DST_PORT" "2222"
+set_var "LOG_DIR" "log"
+set_var "LOG_EXT" ".log"
+set_var "CFG_DIR" "cfg"
+set_var "BACKUP_DIR" "/backup_storage" # folder on the DST_HOST
+set_var "BACKUP_DIR_TEMP" "_temp"
+set_var "ARCHIVE_DATE_MASK" "+%Y-%m-%d_%H-%M-%S"
+set_var "LOG_MSG_DATE_MASK" "+%Y-%m-%d %H:%M:%S.%Z"
+set_var "UMASK" "0007"
+set_var "DB_ARCH_NAME_EXT" ".gz"
+set_var "SSH_TPL" "ssh -q -p DST_PORT -o StrictHostKeyChecking=no DST_USER@DST_HOST"
+set_var "RSYNC_OPT" "--verbose --progress"
+set_var "RSYNC_TPL" "nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --compress --perms --chmod=g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -q -T -x -o Compression=no -p DST_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
+set_var "MYSQL_CMD" "mysql"
+set_var "MYSQL_GET_ALL_DB_NAMES_TPL" "MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
+set_var "MYSQL_DUMP_TMP_DIR" "/tmp"
+set_var "MYSQL_DUMP_CMD" "mysqldump"
+set_var "MYSQL_DUMP_TPL" "MYSQL_DUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
+set_var "POST_CMD_TPL" "eval ./final.sh > LOG_FILE.final.txt 2>&1 ; { grep --color=never \" - Error: \| - Start: \| - Dir: \| - Dump DB: \| - Finish$\|rsync error\" LOG_FILE; } | { [ -n \"${REMOTE_CMD_LOCAL_DIR}\" ] && SSH_TPL /backup/send_backup_logs.sh \"Backup:\ $1\" || ./send_backup_logs.sh \"Backup: $1\"; }"
+set_var "KEEP_LAST_BACKUPS" "5"
+set_var "KEEP_FIRST_BY_UNIQ_STR_PART" "8" # Backups look 2017-01-01_15-02-02, 2017-02-01_15-02-03. First 8 symbols are markers to keep backup (For example "2017-01-" and "2017-02-")
+# End Cfg
 
-if [ -z "$1" ]; then
-    echo "Usage: $0 config_file"
-    echo "Config directory: $CFG_DIR"
-    echo "Exit"
-    exit 1
+if [ -n "${TERM}" ] && [ "${TERM}" != "dumb" ]; then
+    LOG_ECHO=1
 else
-    CFG=$1
+    LOG_ECHO=0
 fi
 
-SOURCE_FILE="$CFG_DIR/$CFG"
+# $1 - message
+# $2 - (0/1, default 1) print date/time
+# $3 - (0/1, default 1) print end of line
+log() {
+    if [ "$2" == "0" ]; then
+        msg=""
+    else
+        msg="$(date "+%Y-%m-%d %H:%M:%S,%3N %Z") - "
+    fi
 
-if [ ! -f "$SOURCE_FILE" ]; then
-    echo "Can't read the file: $SOURCE_FILE"
-    exit 2
-fi
+    msg="${msg}${1}"
 
-. "$SOURCE_FILE"
+    if [ "$3" == "0" ]; then
+        echo_opt="-n"
+    else
+        echo_opt=
+    fi
 
-if [ $? -ne 0 ]; then
-    echo "Failed to source the file: $SOURCE_FILE. Exit 1"
+    if [ "${LOG_ECHO}" == "1" ]; then
+        eval echo "${echo_opt}" '"${msg}"'
+    fi
+
+    eval echo "${echo_opt}" '"${msg}"' >> "${log_file}"
+}
+
+# $1 - message
+print_stderr() {
+    echo "$1" >&2
+}
+
+if [ -n "$1" ]; then
+    cfg="$1"
+else
+    print_stderr "Usage: $0 <config_file>"
+    print_stderr "Config directory: ${CFG_DIR}"
+    print_stderr "Exit 1"
     exit 1
 fi
 
-umask "$UMASK"
-DT=`date "$ARCHIVE_DATE_MASK"`
-LOG_DIR="$LOG_DIR/$CFG"
-LOG_FILE=${LOG_DIR}/${DT}${LOG_EXT}
+script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+cd "${script_dir}" || exit 2
 
-# Create log dir
-if [ ! -d "$LOG_DIR" ]; then
-    CMD="mkdir -p $LOG_DIR"
-    ${CMD}
-    log "(Created log dir, ran: $CMD)"
-fi
-# End
+cfg_file="${CFG_DIR}/${cfg}"
 
-log "Start"
-log "Use the config: $SOURCE_FILE"
-
-if [ ! -f "$SOURCE_FILE" ]; then
-    log "This configuration doesn't exist. Exit"
+if [ ! -f "${cfg_file}" ]; then
+    print_stderr "Can't find the file: ${cfg_file}. Exit 3"
     exit 3
 fi
 
-BACKUP_ROOT_DIR="$BACKUP_DIR/$CFG"
-BACKUP_DIR="$BACKUP_ROOT_DIR/$DT"
-log "New backup dir is: $BACKUP_DIR"
+# shellcheck source=cfg/example
+. "${cfg_file}"
+source_ec="$?"
 
-if [ -n "$SSH_TPL" ]; then
-    SSH_CMD="$SSH_TPL"
-    SSH_CMD=${SSH_CMD//DST_USER/${DST_USER}}
-    SSH_CMD=${SSH_CMD//DST_HOST/${DST_HOST}}
-    SSH_PRE_CMD="$SSH_CMD '"
-    SSH_POST_CMD="'"
-else
-    SSH_CMD=
-    SSH_PRE_CMD=
-    SSH_POST_CMD=
+if [ "${source_ec}" -ne 0 ]; then
+    print_stderr "Failed to source the file: ${cfg_file}. Exit 4"
+    exit 4
 fi
 
-CMD="${SSH_PRE_CMD}ls $BACKUP_ROOT_DIR 2> /dev/null${SSH_POST_CMD} | sort"
-log "Find latest backup, run: $CMD"
-BACKUPS_LIST=`eval ${CMD}`
-LAST_BACKUP_DIR=`echo "$BACKUPS_LIST" | tail -n 1`
+umask "${UMASK}"
+dt="$(date "${ARCHIVE_DATE_MASK}")"
+log_dir="${LOG_DIR}/${cfg}/${dt}"
+log_file="${log_dir}/${dt}${LOG_EXT}"
 
-if [ -z "$LAST_BACKUP_DIR" ]; then
+cmd="mkdir -p ${log_dir}"
+${cmd}
+log "Created log dir: ${log_dir}"
+
+log "Start: ${cfg}"
+log "Config: ${cfg_file}"
+
+if [ ! -f "${cfg_file}" ]; then
+    m="The configuration '${cfg_file}' doesn't exist. Exit 5"
+    log "${m}"
+    print_stderr "${m}"
+    exit 5
+fi
+
+backup_root_dir="${BACKUP_DIR}/${cfg}"
+backup_final_dir="${backup_root_dir}/${dt}"
+log "New backup dir: ${backup_final_dir}"
+backup_dir="${backup_final_dir}${BACKUP_DIR_TEMP}"
+log "New backup temp dir: ${backup_dir}"
+
+if [ -n "${SSH_TPL}" ]; then
+    ssh_cmd="${SSH_TPL}"
+    ssh_cmd="${ssh_cmd//DST_USER/${DST_USER}}"
+    ssh_cmd="${ssh_cmd//DST_HOST/${DST_HOST}}"
+    ssh_cmd="${ssh_cmd//DST_PORT/${DST_PORT}}"
+    ssh_pre_cmd="${ssh_cmd} '"
+    ssh_post_cmd="'"
+else
+    ssh_cmd=""
+    ssh_pre_cmd=""
+    ssh_post_cmd=""
+fi
+
+cmd="${ssh_pre_cmd}ls ${backup_root_dir} 2> /dev/null | grep -v '${BACKUP_DIR_TEMP}' || echo 'not_found'${ssh_post_cmd}"
+log "Find latest backup, run: ${cmd}"
+backups_list="$(eval "${cmd}")"
+backups_list_ec="$?"
+
+if [ "${backups_list_ec}" -ne 0 ]; then
+    m="Failed to get latest backup (ssh failed?). Exit 6"
+    log "${m}"
+    print_stderr "${m}"
+    exit 6
+fi
+
+if [ -z "${backups_list}" ] || [ "${backups_list}" == "not_found" ]; then
     log "Latest backup not found"
-    CMD="${SSH_PRE_CMD}umask $UMASK; mkdir -p $BACKUP_DIR${SSH_POST_CMD}"
-    log "Create destination directory, run: $CMD"
-    eval ${CMD}
+    cmd="${ssh_pre_cmd}umask ${UMASK} && mkdir -p ${backup_dir}${ssh_post_cmd}"
+    log "Create destination directory, run: ${cmd}"
+    eval "${cmd}"
+    cmd_ec="$?"
 
-    if [ $? -ne "0" ]; then
-        log "Failed to create the directory. Exit"
-        exit 1
+    if [ "${cmd_ec}" -ne 0 ]; then
+        m="Failed to create the directory. Exit 7"
+        log "${m}"
+        print_stderr "${m}"
+        exit 7
     fi
 else
-    LAST_BACKUP_DIR="$BACKUP_ROOT_DIR/$LAST_BACKUP_DIR"
-    log "Found latest backup: $LAST_BACKUP_DIR"
+    last_backup_dir="${backup_root_dir}/$(echo "${backups_list}" | sort | tail -n 1)"
+    log "Found latest backup: ${last_backup_dir}"
 
-    CMD="${SSH_PRE_CMD}nice -n 19 ionice -c 3 cp -al $LAST_BACKUP_DIR $BACKUP_DIR${SSH_POST_CMD}"
-    log "Copying data from latest to new backup, run: $CMD"
-    eval ${CMD}
+    cmd="${ssh_pre_cmd}nice -n 19 ionice -c 3 cp -al --reflink=always ${last_backup_dir} ${backup_dir}${ssh_post_cmd}"
+    log "Copy data from latest to new backup, run: ${cmd}"
+    copy_out="$(eval "${cmd}" 2>&1)"
+    copy_ec="$?"
+
+    if [ "${copy_ec}" -ne 0 ]; then
+        m="Error: Copy failed. Output: '${copy_out}'. Exit 8"
+        log "${m}"
+        print_stderr "${m}"
+        exit 8
+    fi
+
     log "Copy finished"
 fi
 
-for DIRS_ITERATOR in "${!DIRS[@]}"; do
-    DIR=${DIRS[$DIRS_ITERATOR]}
-    log "Work with the dir: $DIR"
+for dirs_iterator in "${!DIRS[@]}"; do
+    dir=${DIRS[${dirs_iterator}]}
+    log "Dir: ${dir}"
 
-    RSYNC_CMD="$RSYNC_TPL"
-    RSYNC_CMD=${RSYNC_CMD//RSYNC_OPT/${RSYNC_OPT}}
-    RSYNC_CMD=${RSYNC_CMD//SRC/${DIR}}
-    RSYNC_CMD=${RSYNC_CMD//DST_USER/${DST_USER}}
-    RSYNC_CMD=${RSYNC_CMD//DST_HOST/${DST_HOST}}
-    RSYNC_CMD=${RSYNC_CMD//DST_DIR/${BACKUP_DIR}}
+    rsync_cmd="${RSYNC_TPL}"
+    rsync_cmd="${rsync_cmd//RSYNC_OPT/${RSYNC_OPT}}"
+    rsync_cmd="${rsync_cmd//SRC/${dir}}"
+    rsync_cmd="${rsync_cmd//DST_USER/${DST_USER}}"
+    rsync_cmd="${rsync_cmd//DST_HOST/${DST_HOST}}"
+    rsync_cmd="${rsync_cmd//DST_PORT/${DST_PORT}}"
+    rsync_cmd="${rsync_cmd//DST_DIR/${backup_dir}}"
 
     # Exclude list
-    EXCLUDE_CMD=
-    DIR_STRLEN=${#DIR}
+    exclude_cmd=""
+    dir_strlen=${#dir}
 
-    for EXCLUDE_ITERATOR in "${!EXCLUDE[@]}"; do
-        EXCL=${EXCLUDE[$EXCLUDE_ITERATOR]}
+    for exclude_iterator in "${!EXCLUDE[@]}"; do
+        excl="${EXCLUDE[${exclude_iterator}]}"
 
-        if [ ${DIR} == ${EXCL:0:${DIR_STRLEN}} ]; then
-            if [ -n "$EXCLUDE_CMD" ]; then
-                EXCLUDE_CMD="$EXCLUDE_CMD --exclude $EXCL"
+        if [ "${dir}" == "${excl:0:${dir_strlen}}" ]; then
+            if [ -n "${exclude_cmd}" ]; then
+                exclude_cmd="${exclude_cmd} --exclude ${excl}"
             else
-                EXCLUDE_CMD="--exclude $EXCL"
+                exclude_cmd="--exclude ${excl}"
             fi
         fi
     done
 
-    if [ -n "$EXCLUDE_CMD" ]; then
-        RSYNC_CMD=${RSYNC_CMD//EXCLUDE/${EXCLUDE_CMD}}
+    if [ -n "${exclude_cmd}" ]; then
+        rsync_cmd=${rsync_cmd//EXCLUDE/${exclude_cmd}}
     else
-        RSYNC_CMD=${RSYNC_CMD//EXCLUDE /}
+        rsync_cmd=${rsync_cmd//EXCLUDE /}
     fi
     # End
 
-    log "Run rsync: $RSYNC_CMD"
-    OUT=`eval "${RSYNC_CMD} 2>&1"`
-    log "Output:
-$OUT"
-    log "Completed the dir: $DIR"
+    log "Run rsync: ${rsync_cmd}"
+    rsync_log="${log_dir}/$(date "${ARCHIVE_DATE_MASK}")${dir//\//_}${LOG_EXT}"
+    eval "${rsync_cmd}" > "${rsync_log}" 2>&1
+    log "Completed dir: ${dir}"
 done
 
 # MySQL DBs dump
-if [ -n "$MYSQL_HOST" ]; then
-    log "DB backup start"
+if [ -n "${MYSQL_HOST}" ]; then
+    log "Start DB backup"
 
-    MYSQL_EXEC="$MYSQL_GET_ALL_DB_NAMES_TPL"
-    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_CMD/${MYSQL_CMD}}
-    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_HOST/${MYSQL_HOST}}
-    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_USER/${MYSQL_USER}}
-    MYSQL_EXEC=${MYSQL_EXEC//MYSQL_PASS/${MYSQL_PASS}}
+    mysql_cmd="${MYSQL_GET_ALL_DB_NAMES_TPL}"
+    mysql_cmd="${mysql_cmd//MYSQL_CMD/${MYSQL_CMD}}"
+    mysql_cmd="${mysql_cmd//MYSQL_HOST/${MYSQL_HOST}}"
+    mysql_cmd="${mysql_cmd//MYSQL_USER/${MYSQL_USER}}"
+    mysql_cmd="${mysql_cmd//MYSQL_PASS/${MYSQL_PASS}}"
 
     log "Get all databases name"
-    DBS=`eval "${MYSQL_EXEC} 2>&1"`
+    dbs="$(eval "${mysql_cmd} 2>&1")"
+    dbs_ec=$?
 
-    if [ $? -ne 0 ]; then
-        log "Error: 'Get all databases name' failed. Output: $DBS"
+    if [ "${dbs_ec}" -ne 0 ]; then
+        log "Error: 'Get all databases name' failed. Output: ${dbs}"
     else
         log "Output:
-$DBS"
+${dbs}"
 
-        DBS=(${DBS})
+        dbs=("${dbs}")
 
-        for DB in "${DBS[@]}"; do
-            log "Dump the DB: $DB"
+        for db in ${dbs[*]}; do
+            log "Dump DB: ${db}"
 
-            DB_ARCH_NAME=${MYSQLDUMP_TMP_DIR}/${DB}${DB_ARCH_NAME_EXT}
+            db_arch_name="${MYSQL_DUMP_TMP_DIR}/${db}${DB_ARCH_NAME_EXT}"
 
-            if [ -f "$DB_ARCH_NAME" ]; then
-                log "Remove the file: $DB_ARCH_NAME"
-                rm -f "$DB_ARCH_NAME"
+            if [ -f "${db_arch_name}" ]; then
+                log "Remove the file: ${db_arch_name}"
+                rm -f "${db_arch_name}"
             fi
 
-            MYSQLDUMP_EXEC="$MYSQLDUMP_TPL"
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQLDUMP_CMD/${MYSQLDUMP_CMD}}
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_HOST/${MYSQL_HOST}}
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_USER/${MYSQL_USER}}
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//MYSQL_PASS/${MYSQL_PASS}}
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//DB_NAME/${DB}}
-            MYSQLDUMP_EXEC=${MYSQLDUMP_EXEC//DB_ARCH_NAME/${DB_ARCH_NAME}}
+            mysqldump_cmd="${MYSQL_DUMP_TPL}"
+            mysqldump_cmd="${mysqldump_cmd//MYSQL_DUMP_CMD/${MYSQL_DUMP_CMD}}"
+            mysqldump_cmd="${mysqldump_cmd//MYSQL_HOST/${MYSQL_HOST}}"
+            mysqldump_cmd="${mysqldump_cmd//MYSQL_USER/${MYSQL_USER}}"
+            mysqldump_cmd="${mysqldump_cmd//MYSQL_PASS/${MYSQL_PASS}}"
+            mysqldump_cmd="${mysqldump_cmd//DB_NAME/${db}}"
+            mysqldump_cmd="${mysqldump_cmd//DB_ARCH_NAME/${db_arch_name}}"
 
-            OUT=`eval "${MYSQLDUMP_EXEC} 2>&1"`
+            mysqldump_out="$(eval "${mysqldump_cmd}" 2>&1)"
+            mysqldump_ec="$?"
 
-            if [ $? -eq 0 ] && [ -f "$DB_ARCH_NAME" ]; then
-                RSYNC_CMD="$RSYNC_TPL"
-                RSYNC_CMD=${RSYNC_CMD//RSYNC_OPT/${RSYNC_OPT}}
-                RSYNC_CMD=${RSYNC_CMD//SRC/$DB_ARCH_NAME}
-                RSYNC_CMD=${RSYNC_CMD//DST_USER/$DST_USER}
-                RSYNC_CMD=${RSYNC_CMD//DST_HOST/$DST_HOST}
-                RSYNC_CMD=${RSYNC_CMD//DST_DIR/$BACKUP_DIR}
-                RSYNC_CMD=${RSYNC_CMD//EXCLUDE /}
+            if [ "${mysqldump_ec}" -eq 0 ] && [ -f "${db_arch_name}" ]; then
+                rsync_cmd="${RSYNC_TPL}"
+                rsync_cmd="${rsync_cmd//RSYNC_OPT/${RSYNC_OPT}}"
+                rsync_cmd="${rsync_cmd//SRC/${db_arch_name}}"
+                rsync_cmd="${rsync_cmd//DST_USER/${DST_USER}}"
+                rsync_cmd="${rsync_cmd//DST_HOST/${DST_HOST}}"
+                rsync_cmd="${rsync_cmd//DST_PORT/${DST_PORT}}"
+                rsync_cmd="${rsync_cmd//DST_DIR/${backup_dir}}"
+                rsync_cmd="${rsync_cmd//EXCLUDE /}"
 
-                log "Run rsync: $RSYNC_CMD"
-                OUT=`eval "${RSYNC_CMD} 2>&1"`
-                log "Output:
-$OUT"
-                rm -f "$DB_ARCH_NAME"
+                log "Run rsync: ${rsync_cmd}"
+                rsync_log="${log_dir}/$(date "${ARCHIVE_DATE_MASK}")_mysql_${db}${LOG_EXT}"
+                eval "${rsync_cmd}" > "${rsync_log}" 2>&1
+                rm -f "${db_arch_name}"
             else
-                log "Error: Backup failed for the DB: '$DB'. Output: $OUT"
+                log "Error: Backup failed for the DB: '${db}'. Output: ${mysqldump_out}"
             fi
 
-            log "Completed the DB dump: $DB"
+            log "Completed the DB dump: ${db}"
         done
     fi
 
-    log "DB backup finish"
+    log "Finish DB backup"
 fi
 # End MySQL DBs dump
 
 log "Finish"
 
-if [ -n "$POST_CMD_TPL" ]; then
-    POST_CMD="$POST_CMD_TPL"
-    POST_CMD=${POST_CMD//LOG_FILE/${LOG_FILE}}
+if [ -n "${POST_CMD_TPL}" ]; then
+    post_cmd="${POST_CMD_TPL}"
+    post_cmd="${post_cmd//LOG_FILE/${log_file}}"
+    post_cmd="${post_cmd//DST_DIR/${backup_dir}}"
+    post_cmd="${post_cmd//SSH_TPL/${ssh_cmd}}"
 
+#    log "Run POST_CMD: ${post_cmd}"
     log "Run POST_CMD"
-    ${POST_CMD}
+    ${post_cmd}
 fi
 
+cmd="${ssh_pre_cmd}mv ${backup_dir} ${backup_final_dir}${ssh_post_cmd}"
+log "Rename backup directory, run: ${cmd}"
+eval "${cmd}"
+
 # Remove old backups
-if [ -n "$KEEP_LAST_BACKUPS" ]; then
+if [ -n "${KEEP_LAST_BACKUPS}" ]; then
     log "All backups list:"
-    if [ -n "$BACKUPS_LIST" ]; then
-        log "$BACKUPS_LIST" false
+    if [ -n "${backups_list}" ]; then
+        log "${backups_list}" 0
     else
-        log "<empty>" false
+        log "<empty>" 0
     fi
 
-    CANDIDATES_TO_REMOVE=`echo "$BACKUPS_LIST" | head -n -${KEEP_LAST_BACKUPS}`
-    log "List without last $KEEP_LAST_BACKUPS backups"
-    if [ -n "$CANDIDATES_TO_REMOVE" ]; then
-        log "$CANDIDATES_TO_REMOVE" false
+    candidates_to_remove="$(echo "${backups_list}" | head -n -"${KEEP_LAST_BACKUPS}")"
+    log "List without last ${KEEP_LAST_BACKUPS} backups"
+    if [ -n "${candidates_to_remove}" ]; then
+        log "${candidates_to_remove}" 0
     else
-        log "<empty>" false
+        log "<empty>" 0
     fi
 
-    KEEP=()
-    DELETE=()
-    FIRST_BY_UNIQ_STR_PART=
+    keep=()
+    delete=()
+    first_by_uniq_str_part=
 
-    while read -r CANDIDATE; do
-        CANDIDATE_UNIQ_STR_PART="${CANDIDATE:0:$KEEP_FIRST_BY_UNIQ_STR_PART}"
+    while read -r candidate; do
+        candidate_uniq_str_part="${candidate:0:${KEEP_FIRST_BY_UNIQ_STR_PART}}"
 
-        if [ -z "$FIRST_BY_UNIQ_STR_PART" ] || [ "$FIRST_BY_UNIQ_STR_PART" != "$CANDIDATE_UNIQ_STR_PART" ] ; then
-            KEEP+=("$CANDIDATE")
-            FIRST_BY_UNIQ_STR_PART="$CANDIDATE_UNIQ_STR_PART"
+        if [ -z "${first_by_uniq_str_part}" ] || [ "${first_by_uniq_str_part}" != "${candidate_uniq_str_part}" ]; then
+            keep+=("${candidate}")
+            first_by_uniq_str_part="${candidate_uniq_str_part}"
         else
-            DELETE+=("$CANDIDATE")
+            delete+=("${candidate}")
         fi
-    done <<< "$CANDIDATES_TO_REMOVE"
+    done <<< "${candidates_to_remove}"
 
     log "Keep backups list:"
-    if [ -n "$KEEP" ]; then
-        (IFS=$'\n'; log "${KEEP[*]}" false)
+    if [ -n "${keep[0]}" ]; then
+        log "${keep[*]}" 0
     else
-        log "<empty>" false
+        log "<empty>" 0
     fi
 
     log "Delete backups list:"
-    if [ -n "$DELETE" ]; then
-        (IFS=$'\n'; log "${DELETE[*]}" false)
-        CMD="${SSH_PRE_CMD}cd $BACKUP_ROOT_DIR && rm -rf ${DELETE[*]}${SSH_POST_CMD}"
-        log "Delete backups, run: $CMD"
-        eval ${CMD}
+    if [ -n "${delete[0]}" ]; then
+        log "${delete[*]}" 0
+        cmd="${ssh_pre_cmd}cur_dir=\$(pwd) ; cd ${backup_root_dir} && rm -rf ${delete[*]} *_temp ; cd \${cur_dir}${ssh_post_cmd}"
+        log "Delete backups, run: ${cmd}"
+        eval "${cmd}"
     else
-        log "<empty>" false
+        log "<empty>" 0
     fi
 fi
 # End Remove old backups
+
+log "Done"
