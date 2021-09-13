@@ -29,7 +29,8 @@ set_var "UMASK" "0007"
 set_var "DB_ARCH_NAME_EXT" ".gz"
 set_var "SSH_TPL" "ssh -q -p DST_PORT -o StrictHostKeyChecking=no DST_USER@DST_HOST"
 set_var "RSYNC_OPT" "--verbose --progress"
-set_var "RSYNC_TPL" "nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --compress --perms --chmod=g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -q -T -x -o Compression=no -p DST_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
+set_var "RSYNC_TPL" "nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --compress --perms --chmod=u+rw,g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -q -T -x -o Compression=no -p DST_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
+set_var "RSYNC_RETRIES" "5"
 set_var "MYSQL_CMD" "mysql"
 set_var "MYSQL_GET_ALL_DB_NAMES_TPL" "MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
 set_var "MYSQL_DUMP_TMP_DIR" "/tmp"
@@ -74,6 +75,22 @@ log() {
 # $1 - message
 print_stderr() {
     echo "$1" >&2
+}
+
+# $1 - rsync command
+# $2 - log file
+rsync_with_retries() {
+    for i in $(seq 1 "${RSYNC_RETRIES}"); do
+        log "Run rsync (attempt: ${i}/${RSYNC_RETRIES}): ${rsync_cmd}"
+
+        eval "$1" >> "$2" 2>&1
+        rsync_ec="$?"
+        log "Rsync finished with exit code: ${rsync_ec}"
+
+        if [ "${rsync_ec}" -eq 0 ]; then
+            break
+        fi
+    done
 }
 
 if [ -n "$1" ]; then
@@ -221,9 +238,8 @@ for dirs_iterator in "${!DIRS[@]}"; do
     fi
     # End
 
-    log "Run rsync: ${rsync_cmd}"
     rsync_log="${log_dir}/$(date "${ARCHIVE_DATE_MASK}")${dir//\//_}${LOG_EXT}"
-    eval "${rsync_cmd}" > "${rsync_log}" 2>&1
+    rsync_with_retries "${rsync_cmd}" "${rsync_log}"
     log "Completed dir: ${dir}"
 done
 
@@ -280,9 +296,8 @@ ${dbs}"
                 rsync_cmd="${rsync_cmd//DST_DIR/${backup_dir}}"
                 rsync_cmd="${rsync_cmd//EXCLUDE /}"
 
-                log "Run rsync: ${rsync_cmd}"
                 rsync_log="${log_dir}/$(date "${ARCHIVE_DATE_MASK}")_mysql_${db}${LOG_EXT}"
-                eval "${rsync_cmd}" > "${rsync_log}" 2>&1
+                rsync_with_retries "${rsync_cmd}" "${rsync_log}"
                 rm -f "${db_arch_name}"
             else
                 log "Error: Backup failed for the DB: '${db}'. Output: ${mysqldump_out}"
