@@ -27,21 +27,21 @@ set_var "ARCHIVE_DATE_MASK" "+%Y-%m-%d_%H-%M-%S"
 set_var "LOG_MSG_DATE_MASK" "+%Y-%m-%d %H:%M:%S.%Z"
 set_var "UMASK" "0007"
 set_var "DB_ARCH_NAME_EXT" ".gz"
-set_var "SSH_TPL" "ssh -q -p DST_PORT -o StrictHostKeyChecking=no DST_USER@DST_HOST"
-set_var "RSYNC_OPT" "--verbose --progress"
-set_var "RSYNC_TPL" "nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --compress --perms --chmod=u+rw,g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -q -T -x -o Compression=no -p DST_PORT -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
+set_var "SSH_TPL" "ssh -q -T -x -o ServerAliveInterval=60 -o StrictHostKeyChecking=no -o Compression=yes -p DST_PORT DST_USER@DST_HOST"
+set_var "RSYNC_OPT" "--timeout=1200 --verbose --partial --progress"
+set_var "RSYNC_TPL" "nice -n 19 ionice -c 3 rsync RSYNC_OPT -aR -H --inplace --delete --perms --chmod=u+rw,g+rw,o-rwx,Du+rwx,Dg+rwx,Do-rwx,D-t -e \"ssh -q -T -x -p DST_PORT -o ServerAliveInterval=60 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Compression=yes\" EXCLUDE SRC DST_USER@DST_HOST:DST_DIR"
 set_var "RSYNC_RETRIES" "5"
 set_var "MYSQL_CMD" "mysql"
 set_var "MYSQL_GET_ALL_DB_NAMES_TPL" "MYSQL_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-column-names -e \"show databases\""
 set_var "MYSQL_DUMP_TMP_DIR" "/tmp"
 set_var "MYSQL_DUMP_CMD" "mysqldump"
-set_var "MYSQL_DUMP_TPL" "MYSQL_DUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | gzip -c --best > DB_ARCH_NAME"
-set_var "POST_CMD_TPL" "eval ./final.sh > LOG_FILE.final.txt 2>&1 ; { grep --color=never \" - Error: \| - Start: \| - Dir: \| - Dump DB: \| - Finish$\|rsync error\" LOG_FILE; } | { [ -n \"${REMOTE_CMD_LOCAL_DIR}\" ] && SSH_TPL /backup/send_backup_logs.sh \"Backup:\ $1\" || ./send_backup_logs.sh \"Backup: $1\"; }"
+set_var "MYSQL_DUMP_TPL" "MYSQL_DUMP_CMD --host=MYSQL_HOST --user=MYSQL_USER --password=MYSQL_PASS --skip-lock-tables --quick --extended-insert --disable-keys --databases DB_NAME | pigz -c --best > DB_ARCH_NAME"
+set_var "POST_CMD_TPL" "eval ./final.sh > LOG_FILE.final.txt 2>&1 ; { grep --color=never \" - Error: \| - Start: \| - Dir: \| - Dump DB: \| - Finish$\|rsync error\|Rsync exit code\" LOG_FILE | grep -v --color=never \"Rsync exit code: 0\"; } | { [ -n \"${REMOTE_CMD_LOCAL_DIR}\" ] && SSH_TPL /backup/send_backup_logs.sh \"Backup:\ $1\" || ./send_backup_logs.sh \"Backup: $1\"; }"
 set_var "KEEP_LAST_BACKUPS" "5"
 set_var "KEEP_FIRST_BY_UNIQ_STR_PART" "8" # Backups look 2017-01-01_15-02-02, 2017-02-01_15-02-03. First 8 symbols are markers to keep backup (For example "2017-01-" and "2017-02-")
 # End Cfg
 
-if [ -n "${TERM}" ] && [ "${TERM}" != "dumb" ]; then
+if [ -n "${TERM}" ] && [ "${TERM}" != "dumb" ] && [ "${TERM}" != "unknown" ]; then
     LOG_ECHO=1
 else
     LOG_ECHO=0
@@ -51,9 +51,11 @@ fi
 # $2 - (0/1, default 1) print date/time
 # $3 - (0/1, default 1) print end of line
 log() {
-    if [ "$2" == "0" ]; then
-        msg=""
-    else
+    local msg=""
+    local echo_opt=""
+    local msg=""
+
+    if [ "$2" != "0" ]; then
         msg="$(date "+%Y-%m-%d %H:%M:%S,%3N %Z") - "
     fi
 
@@ -61,8 +63,6 @@ log() {
 
     if [ "$3" == "0" ]; then
         echo_opt="-n"
-    else
-        echo_opt=
     fi
 
     if [ "${LOG_ECHO}" == "1" ]; then
@@ -84,11 +84,15 @@ rsync_with_retries() {
         log "Run rsync (attempt: ${i}/${RSYNC_RETRIES}): ${rsync_cmd}"
 
         eval "$1" >> "$2" 2>&1
-        rsync_ec="$?"
-        log "Rsync finished with exit code: ${rsync_ec}"
+        local rsync_ec="$?"
+        log "Rsync exit code: ${rsync_ec}"
+        echo "$(date) - Rsync exit code: ${rsync_ec}" >> "$2"
 
         if [ "${rsync_ec}" -eq 0 ]; then
             break
+        elif [ "${rsync_ec}" -eq 255 ]; then
+            log "Exit ${rsync_ec}"
+            exit "${rsync_ec}"
         fi
     done
 }
@@ -157,6 +161,17 @@ else
     ssh_cmd=""
     ssh_pre_cmd=""
     ssh_post_cmd=""
+fi
+
+cmd="${ssh_pre_cmd}rm -rf ${backup_root_dir}/*_temp${ssh_post_cmd}"
+log "Delete _temp backup dirs, run: ${cmd}"
+rm_out="$(eval "${cmd}" 2>&1)"
+rm_ec="$?"
+
+if [ "${rm_ec}" -ne 0 ]; then
+    m="Error: Delete _temp backup dirs failed. Output: '${rm_out}'"
+    log "${m}"
+    print_stderr "${m}"
 fi
 
 cmd="${ssh_pre_cmd}ls ${backup_root_dir} 2> /dev/null | grep -v '${BACKUP_DIR_TEMP}' || echo 'not_found'${ssh_post_cmd}"
@@ -319,7 +334,7 @@ if [ -n "${POST_CMD_TPL}" ]; then
     post_cmd="${post_cmd//DST_DIR/${backup_dir}}"
     post_cmd="${post_cmd//SSH_TPL/${ssh_cmd}}"
 
-#    log "Run POST_CMD: ${post_cmd}"
+    #log "Run POST_CMD: ${post_cmd}"
     log "Run POST_CMD"
     ${post_cmd}
 fi
@@ -370,7 +385,7 @@ if [ -n "${KEEP_LAST_BACKUPS}" ]; then
     log "Delete backups list:"
     if [ -n "${delete[0]}" ]; then
         log "${delete[*]}" 0
-        cmd="${ssh_pre_cmd}cur_dir=\$(pwd) ; cd ${backup_root_dir} && rm -rf ${delete[*]} *_temp ; cd \${cur_dir}${ssh_post_cmd}"
+        cmd="${ssh_pre_cmd}cur_dir=\$(pwd) ; cd ${backup_root_dir} && rm -rf ${delete[*]} ; cd \${cur_dir}${ssh_post_cmd}"
         log "Delete backups, run: ${cmd}"
         eval "${cmd}"
     else

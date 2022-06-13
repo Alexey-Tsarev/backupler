@@ -1,9 +1,10 @@
 #!/bin/bash
 
-#set -x
+# set -x
 
-SSH_USER_HOST=backupX@some.host
-SSH_PORT=2222
+DST_USER=backupX
+DST_HOST=some.host
+DST_PORT=2222
 MNT_POINT=/mnt/sshfs_backupler
 REMOTE_CMD=/backup/backupler.sh
 CFG="$(hostname -s)"
@@ -26,7 +27,6 @@ sshfs_umount() {
 
 REMOTE_CMD_LOCALLY="${MNT_POINT}${REMOTE_CMD}"
 REMOTE_CMD_LOCAL_DIR="$(dirname ${REMOTE_CMD_LOCALLY})"
-export REMOTE_CMD_LOCAL_DIR
 
 if [ ! -d "${MNT_POINT}" ]; then
     mkdir -p "${MNT_POINT}"
@@ -34,7 +34,7 @@ fi
 
 sshfs_umount
 
-CMD="sshfs -p ${SSH_PORT} -o StrictHostKeyChecking=no ${SSH_USER_HOST}:/ ${MNT_POINT}"
+CMD="sshfs -p ${DST_PORT} -o StrictHostKeyChecking=no ${DST_USER}@${DST_HOST}:/ ${MNT_POINT}"
 log "Trying to mount remote fs, run: ${CMD}"
 ${CMD}
 CMD_ec="$?"
@@ -47,6 +47,12 @@ else
 fi
 
 cd "${REMOTE_CMD_LOCAL_DIR}" || exit 1
+
+export DST_USER
+export DST_HOST
+export DST_PORT
+export REMOTE_CMD_LOCAL_DIR
+
 "${REMOTE_CMD_LOCALLY}" "${CFG}"
 
 cd "${OLDPWD}" || exit 2
